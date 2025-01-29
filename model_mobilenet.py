@@ -1,4 +1,4 @@
-from . import util
+import util
 from keras import callbacks as kc
 from keras import models as km
 from keras.layers import Input, Conv2D, DepthwiseConv2D, BatchNormalization, ReLU, GlobalAveragePooling2D, Dense

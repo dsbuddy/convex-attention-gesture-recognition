@@ -31,6 +31,7 @@ class Trial:
 
 
 class Data:
+
     def __init__(self, filename=None,addDate=False):
         if(filename==None):
            filename = 'data_' + datetime.now().strftime('%Y%m%d_%H%M%S_') + '.json'
@@ -38,7 +39,7 @@ class Data:
             filename = 'data_' + datetime.now().strftime('%Y%m%d_%H%M%S') + filename + '.json'
         #else keep the filename as is
 
-        dir = os.path.join('./', 'data')
+        dir = os.path.join('data')
         os.makedirs(dir, exist_ok=True)
         self.path = os.path.join(dir, filename)
         self.trials = []

@@ -13,7 +13,7 @@ from timm.models.layers import DropPath, to_2tuple, trunc_normal_
 from torch.utils.data import DataLoader, Dataset
 
 # TransformerBlock serves as a base class for Transformer-like architectures.
-# This aligns with the theoretical foundation laid in "Unraveling Attention via Convex Duality" [ErgenTransformer].
+# This aligns with the theoretical foundation laid in "Unraveling Attention via Convex Duality" [ConvexViT].
 class TransformerBlock(nn.Module):
     def __init__(self):
         super().__init__()
@@ -43,7 +43,7 @@ class ConvexMLPBlock(TransformerBlock):
 
         self.burer = burer_monteiro
         if burer_monteiro:
-            # Decomposition of W and V for efficient optimization, as described in Burer-Monteiro [ErgenTransformer, Section 2.1].
+            # Decomposition of W and V for efficient optimization, as described in Burer-Monteiro [ConvexViT, Section 2.1].
             self.W = torch.nn.Parameter(torch.randn(self.embed_dim, dim, burer_dim) / burer_dim, requires_grad=True)
             self.V = torch.nn.Parameter(torch.randn(self.embed_dim, burer_dim, num_classes) / burer_dim, requires_grad=True)
         else:
@@ -119,9 +119,9 @@ class TorchDataset(Dataset):
     def __getitem__(self, idx):
         return torch.tensor(self.data[idx], dtype=torch.float32), torch.tensor(self.labels[idx], dtype=torch.long)
 
-# PyTorchErgenModel encapsulates the architecture and training logic.
+# ConvexViT encapsulates the architecture and training logic.
 # It follows the convex principles and transfer learning techniques outlined in Sections 3 and 5.
-class PyTorchErgenModel:
+class ConvexViT:
 
     MODEL_DIR = 'repo'
     MODEL_CONFIG = 'model.json'
@@ -129,7 +129,7 @@ class PyTorchErgenModel:
 
     def __init__(self, labels, filename):
         """
-        Initialize the PyTorchErgenModel.
+        Initialize the ConvexViT.
 
         Args:
             labels: List of class labels.
@@ -137,7 +137,7 @@ class PyTorchErgenModel:
         """
         self.labels = labels
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        name = 'model_' + filename #datetime.now().strftime('%Y%m%d_%H%M%S')
+        name = 'model_' + filename
         self.path = os.path.join(self.MODEL_DIR, 'models', name)
         os.makedirs(self.path, exist_ok=True)
 

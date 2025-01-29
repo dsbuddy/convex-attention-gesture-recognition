@@ -1,14 +1,15 @@
-from datetime import datetime
-import numpy as np
-from sklearn.metrics import f1_score
-from sklearn.preprocessing import label_binarize
-import numexpr as ne
-import json
-import math
-import csv
 import os
+import csv
+import json
+from datetime import datetime
+import math
+import numexpr as ne
+import numpy as np
 import pickle
+from sklearn.preprocessing import label_binarize
 
+from convex_utils import calculate_attention, evaluate_classifier, project_to_nuclear_norm
+from file_utils import dump_model_to_header
 
 # Class Definition
 class RandomFourierTransformer:
@@ -34,107 +35,19 @@ class RandomFourierTransformer:
 		# return ne.evaluate("factor*cos(angle+bias)")
 		return factor * np.cos(angle+bias)
 
-def euclidean_proj_simplex(v, s=1):
-	# Projects a vector onto the probability simplex
-	assert s > 0, "Radius s must be strictly positive (%d <= 0)" % s
-	n, = v.shape  # Ensure v is 1-D
-	# Optimization: Check if already on simplex
-	if v.sum() == s and np.alltrue(v >= 0):
-		return v  
-	# Sort 'v' descending, calculate cumulative sums
-	u = np.sort(v)[::-1]
-	cssv = np.cumsum(u)
-	# Find index where condition is violated, compute theta
-	rho = np.nonzero(u * np.arange(1, n+1) > (cssv - s))[0][-1]
-	theta = (cssv[rho] - s) / (rho + 1.0)
-	# Project by subtracting theta and clipping at 0
-	w = (v - theta).clip(min=0)
-	return w
-
-def euclidean_proj_l1ball(v, s=1):
-	#Projects a vector onto the L1-ball
-	assert s > 0, "Radius s must be strictly positive (%d <= 0)" % s
-	n, = v.shape  # Ensure v is 1-D
-	# Optimization: Check if already within the L1-ball
-	if np.abs(v).sum() <= s:
-		return v  
-	# Project absolute values onto the simplex 
-	u = np.abs(v)
-	w = euclidean_proj_simplex(u, s)
-	# Reconstruct the projection with original signs
-	w *= np.sign(v)  
-	return w
-
-def project_to_nuclear_norm(A, R, P, nystrom_dim, d2):
-	# Projects a matrix to a lower-rank approximation constrained by the nuclear norm
-	# Reshape for SVD calculation
-	A = A.reshape(d2 * P, nystrom_dim)
-	# Perform Singular Value Decomposition (SVD)
-	U, s, V = np.linalg.svd(A, full_matrices=False)
-	# Project singular values onto L1-ball to constrain nuclear norm
-	s = euclidean_proj_l1ball(s, s=R)
-	# Reconstruct the projected matrix
-	Ahat = np.reshape(np.dot(U, np.dot(np.diag(s), V)), (d2, P * nystrom_dim))
-	return Ahat, U, s, V
-
-def calculate_attention(X, A):
-	batch_size, input_dim = X.shape  # Get batch size and input dimension
-	d2, seq_len_times_nystrom_dim = A.shape
-
-	# Infer seq_len and nystrom_dim from A's shape
-	seq_len = seq_len_times_nystrom_dim // input_dim
-	nystrom_dim = input_dim // seq_len
-
-	# Reshape A and X for compatibility
-	A_reshaped = A.reshape(d2, seq_len, nystrom_dim)  # (d2, sequence_length, nystrom_dim)
-	X_reshaped = X.reshape(batch_size, seq_len, nystrom_dim)
-
-	# Calculate attention scores (unscaled)
-	attention_scores = np.einsum("bsi,ksi->bsk", X_reshaped, A_reshaped) / np.sqrt(nystrom_dim)
-
-	# Convex Combination (Softmax)
-	attention_weights = np.exp(attention_scores) / np.sum(np.exp(attention_scores), axis=2, keepdims=True)
-
-	# Ensure Convexity with additional constraints
-	attention_weights = np.maximum(attention_weights, 0)  # Non-negativity constraint
-	row_sums = np.sum(attention_weights, axis=2, keepdims=True)  # Row sum calculation for normalization
-	attention_weights /= row_sums  # Normalize rows to sum to 1
-
-	# return attention_weights
-	return attention_weights.reshape(attention_weights.shape[0], attention_weights.shape[-1]).T
-
-class Model:  # Base Class
-    def __init__(self, labels, filename):
-        self.labels = labels
-        self.path = f"./models/model_{filename}"
-        os.makedirs(self.path, exist_ok=True)
-
-    def save(self, filename):
-        raise NotImplementedError  # Subclasses will implement
-
-    def load(self, filename):
-        raise NotImplementedError
-
-    def train(self, X_train, Y_train, X_test, Y_test):
-        raise NotImplementedError
-
-    def evaluate(self, X_test, Y_test):
-        raise NotImplementedError
-
-
 # Convexified Convolutional Neural Network Class
 class ConvexNeuralModel:
-	def __init__(self, X, Y, n_train, nystrom_dim, gamma, R, variance, learning_rate=0.1, n_iter=750, mini_batch_size=25, nr_of_mini_batches=50, hyperparameter_path_log='hyperparameter_log.csv', path=None, data_filename=None, use_attention=False):
+	def __init__(self, X, Y, n_train, nystrom_dim, gamma, R, variance, learning_rate=0.1, n_iter=750, mini_batch_size=25, nr_of_mini_batches=50, hyperparameter_path_log='hyperparameter_log.csv', path=None, label_enum=None, data_filename=None, use_attention=False):
 		# Storing data
 		self.X_raw = X
 		self.label = Y
 		
 		# Storing data properties
-		self.d2 = np.unique(self.label).shape[0] 
-		self.n = self.X_raw.shape[0]
-		self.P = self.X_raw.shape[1]
-		self.d1 = self.X_raw.shape[2]
-		
+		self.d2 = np.unique(self.label).shape[0] # Output dimension (classes).
+		self.n = self.X_raw.shape[0] # Number of patches frames.
+		self.P = self.X_raw.shape[1] # Number of patch vectors.
+		self.d1 = self.X_raw.shape[2] # Feature dimension of input patch.
+		self.labels = label_enum # Enumerated labels (i.e. N, S, E, W).
 		# Storing hyperparameters
 		self.n_train = n_train
 		self.n_test = self.n - self.n_train
@@ -258,6 +171,8 @@ class ConvexNeuralModel:
 				
 				# Save best model
 				self.save_model(best_model_data["A"], best_model_data["filter"], best_model_data["transformer"], f"{best_epoch:04d}", f"{best_train_acc:.4f}", f"{best_test_acc:.4f}", f"{best_train_f1:.4f}", f"{best_test_f1:.4f}", filename="convex_model_model_BEST_MODEL.pkl")
+				header_filename = os.path.join(self.path, 'model_data_EPOCH_{}_ACC_TRAIN_{}_ACC_TEST_{}_F1_TRAIN_{}_F1_TEST_{}.h'.format(f"{best_epoch:04d}", f"{best_train_acc:.4f}", f"{best_test_acc:.4f}", f"{best_train_f1:.4f}", f"{best_test_f1:.4f}"))
+				dump_model_to_header(best_model_data, output_header_name=header_filename, mean=self.mean, std=self.std, labels=self.labels)
 				print(f"Best Epoch: {best_epoch:04d} Train Acc: {best_train_acc:.4f}, Test Acc: {best_train_acc:.4f} Train F1: {best_train_f1:.4f}, Test F1: {best_test_f1:.4f}")
 
 
@@ -307,33 +222,3 @@ class ConvexNeuralModel:
 				'mini_batch_size': self.mini_batch_size,
 				'nr_of_mini_batches': self.nr_of_mini_batches
 			})
-
-def evaluate_classifier(X_train, X_test, Y_train, Y_test, A, d2):
-    n_train = X_train.shape[0]
-    n_test = X_test.shape[0]
-
-    # Calculate probabilities (assumes softmax-like output)
-    eXAY = np.exp(np.sum((np.dot(X_train, A.T)) * Y_train[:, 0:d2], axis=1))
-    eXA_sum = np.sum(np.exp(np.dot(X_train, A.T)), axis=1) + 1
-    loss = - np.average(np.log(eXAY / eXA_sum))
-
-    # Make predictions
-    predictions_train = np.dot(X_train, A.T)
-    predictions_test = np.dot(X_test, A.T)
-
-    # Calculate error rates
-    error_train = np.average(np.argmax(predictions_train, axis=1) != np.argmax(Y_train, axis=1))
-    error_test = np.average(np.argmax(predictions_test, axis=1) != np.argmax(Y_test, axis=1))
-
-    # Calculate accuracy
-    acc_train = np.sum(np.argmax(predictions_train, axis=1) == np.argmax(Y_train, axis=1)) / n_train
-    acc_test = np.sum(np.argmax(predictions_test, axis=1) == np.argmax(Y_test, axis=1)) / n_test
-
-    # Calculate F1-score
-    y_true_train = np.argmax(Y_train, axis=1)
-    y_pred_train = np.argmax(predictions_train, axis=1)
-    f1_train = f1_score(y_true_train, y_pred_train, average='macro')
-    y_true_test = np.argmax(Y_test, axis=1)
-    y_pred_test = np.argmax(predictions_test, axis=1)
-    f1_test = f1_score(y_true_test, y_pred_test, average='macro')
-    return loss, error_train, error_test, acc_train, acc_test, f1_train, f1_test
